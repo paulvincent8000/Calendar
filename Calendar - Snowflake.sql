@@ -55,7 +55,6 @@ dates AS (
     date,
     YEAR(date)                                          AS year_int,
     'Q' || QUARTER(date)                                AS quarter_of_year,
-    CASE WHEN MONTH(date) <= 6 THEN 'H1' ELSE 'H2' END AS half,
     TO_CHAR(date, 'MMMM')                               AS month_name,
     TO_CHAR(date, 'MON')                                AS month_name_short,
     WEEKOFYEAR(date)                                    AS week_of_year,
@@ -159,8 +158,7 @@ dates AS (
     date <= r.ref_m                                     AS is_past_full_month, -- Date is on or before ref_m (month fully elapsed)
     date = CURRENT_DATE()                               AS is_today,
     DAYOFWEEK(date) IN (0, 6)                           AS is_weekend,
-    date = r.ref_d                                      AS is_yesterday,
-    DAYOFYEAR(date)                                     AS doy               -- Day of year (1–366)
+    date = r.ref_d                                      AS is_yesterday
 
     FROM calendar_base
     CROSS JOIN ref r
@@ -196,7 +194,7 @@ easter_dates AS (
 bw_holidays AS (
     SELECT
         c.date,
-        -- Holiday flags (is_hol_bw, is_bday_bw) are derived from hol_name
+        -- Holiday flags (is_business_day_bw) are derived from hol_name
         -- in combined — holiday logic only needs to be written once.
         CASE
             -- Fixed holidays
@@ -222,14 +220,14 @@ bw_holidays AS (
 ),
 
 -- ── Final assembly ────────────────────────────────────────────────────────────
--- Joins date flags with holiday data. is_bday_bw is named here so that
--- bday_bw (integer) can be derived from it without repeating the condition.
+-- Joins date flags with holiday data. is_business_day_bw is named here so that
+-- business_days_bw (integer) can be derived from it without repeating the condition.
 combined AS (
     SELECT
         c.*,
         h.hol_name                                          AS hol_name_bw,
         h.hol_name IS NOT NULL                              AS is_hol_bw,
-        h.hol_name IS NULL AND NOT c.is_weekend             AS is_bday_bw,
+        h.hol_name IS NULL AND NOT c.is_weekend             AS is_business_day_bw,
         -- UTC offset for reference (use CONVERT_TIMEZONE for calculations)
         CASE
             WHEN c.date >=
@@ -249,6 +247,6 @@ combined AS (
 
 SELECT
     *,
-    is_bday_bw::INT AS bday_bw    -- 1 = business day; SUM() to count business days in any period
+    is_business_day_bw::INT AS business_days_bw    -- 1 = business day; SUM() to count business days in any period
 FROM combined
 ORDER BY date;
