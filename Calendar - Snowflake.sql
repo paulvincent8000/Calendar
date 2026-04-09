@@ -46,7 +46,6 @@ dates AS (
     -- ════════════════════════════════════════════════════════════════════════
     -- Core date attributes (required — do not delete)
     -- ════════════════════════════════════════════════════════════════════════
-    TO_CHAR(date, 'YYYYMMDD')                           AS d,
     date,
     YEAR(date)                                          AS year_int,
     'Q' || QUARTER(date)                                AS quarter_of_year,
@@ -92,6 +91,10 @@ dates AS (
         AND date <= r.ref_m                             AS is_qtd_m,       -- QTD monthly: quarter start → ref_m
     date >= DATE_TRUNC('month',   CURRENT_DATE())
         AND date <= r.ref_d                             AS is_mtd_d,       -- MTD daily: month start → ref_d
+    date >= DATE_TRUNC('month',   CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_cm_d,        -- Current month, closed days only (= is_mtd_d)
+    date >= DATE_TRUNC('month',   CURRENT_DATE())
+        AND date <= r.ref_m                             AS is_cm_m,        -- Current month, completed-month view (FALSE while month is open)
     YEAR(date)  = YEAR(CURRENT_DATE())
         AND MONTH(date) = MONTH(CURRENT_DATE())         AS is_cm_f,        -- Current Month (full calendar month)
     YEAR(date)    = YEAR(CURRENT_DATE())
@@ -139,19 +142,36 @@ dates AS (
     date >= DATEADD(day,  -29, r.ref_d)
         AND date <= r.ref_d                             AS is_l30d,        -- Last 30 completed days
     date >= DATE_TRUNC('month', DATEADD(month, -12, CURRENT_DATE()))
-        AND date <= r.ref_m                             AS c_l12m_f,       -- Last 12 full months (pair: P_L12M_F)
+        AND date <= r.ref_m                             AS is_c_l12m_f,    -- Last 12 full months (pair: IS_P_L12M_F)
     date >= DATEADD(day, -364, r.ref_d)
         AND date <= r.ref_d                             AS is_ttm,         -- Trailing 12 months (rolling 365 completed days)
     date >= DATE_TRUNC('month', DATEADD(month, -24, CURRENT_DATE()))
         AND date <  DATE_TRUNC('month',
-            DATEADD(month, -12, CURRENT_DATE()))        AS p_l12m_f,       -- Prior 12 full months (pair: C_L12M_F)
+            DATEADD(month, -12, CURRENT_DATE()))        AS is_p_l12m_f,    -- Prior 12 full months (pair: IS_C_L12M_F)
 
     -- ════════════════════════════════════════════════════════════════════════
     -- Group 06 · Attributes & Maturity
     -- ════════════════════════════════════════════════════════════════════════
     date <= r.ref_m                                     AS is_cmpl_m,      -- TRUE if the date falls in a fully elapsed month
+    date <= r.ref_d                                     AS is_past_d,      -- TRUE if date is in the past (daily: on or before ref_d)
+    date <= r.ref_m                                     AS is_past_m,      -- TRUE if date is in the past (monthly: on or before ref_m)
     DAYOFYEAR(date)                                     AS doy,            -- Day of year (1–366)
-    DAYOFWEEK(date) IN (0, 6)                           AS is_weekend
+    DAYOFWEEK(date) IN (0, 6)                           AS is_weekend,
+
+    -- ════════════════════════════════════════════════════════════════════════
+    -- Group 07 · Any-Year Comparisons
+    -- Same calendar position as the current period, across all years.
+    -- Useful for same-month trend lines and cross-year overlays.
+    -- ════════════════════════════════════════════════════════════════════════
+    MONTH(date) = MONTH(CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_cm_ay_d,     -- Current calendar month, any year, closed days
+    MONTH(date) = MONTH(CURRENT_DATE())
+        AND date <= r.ref_m                             AS is_cm_ay_m,     -- Current calendar month, any year, completed-month view
+    MONTH(date) = MONTH(CURRENT_DATE())
+        AND DAY(date) <= DAY(r.ref_d)                   AS is_mtd_ay_d,    -- MTD position in current month, any year
+    (MONTH(date) < MONTH(r.ref_d))
+        OR (MONTH(date) = MONTH(r.ref_d)
+            AND DAY(date) <= DAY(r.ref_d))              AS is_ytd_ay_d     -- YTD position (Jan 1 → ref_d calendar point), any year
 
     FROM calendar_base
     CROSS JOIN ref r
@@ -244,4 +264,4 @@ SELECT
     *,
     is_bday_bw::INT AS bday_bw    -- 1 = business day; SUM() to count business days in any period
 FROM combined
-ORDER BY date;
+ORDER BY date
