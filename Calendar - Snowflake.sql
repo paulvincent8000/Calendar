@@ -146,6 +146,7 @@ dates AS (
         AND date <= r.ref_d                             AS is_ytd_cy,        -- YTD current year → ref_d
     date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
         AND date <= DATEADD(year, -1, r.ref_d)          AS is_ytd_py,        -- YTD prior year → (ref_d − 1 year)
+    MONTH(date) <= MONTH(r.ref_m)                       AS is_ytm_ay,        -- YTM position, any year (Jan 1 → end of last completed month)
     date >= DATE_TRUNC('year', CURRENT_DATE())
         AND date <= r.ref_m                             AS is_ytm_cy,        -- YTM current year → ref_m
     date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
