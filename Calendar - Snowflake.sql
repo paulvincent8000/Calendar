@@ -6,10 +6,16 @@
      ref_d  – yesterday (last closed day)
      ref_m  – last day of the prior month (last closed month)
 
-   Daily flags (_D) anchor their upper bound to ref_d.
-   Monthly flags (_M) and full-month windows anchor to ref_m.
-   Full calendar period flags (_F) use CURRENT_DATE() as they are not
-   sensitive to the open-day issue.
+   Naming convention: IS_[PERIOD+SCOPE]_[DIRECTION]
+     Period+scope: ytd, ytm, qtd, qtm, mtd, full_year, full_quarter,
+                   full_month, full_week, rolling_12m
+     Direction:    cy (current year), py (prior year), ay (any year)
+
+   Flag anchor logic:
+     cy/py daily flags (ytd, qtd, mtd)  → upper bound = ref_d
+     cy/py monthly flags (ytm, qtm)     → upper bound = ref_m
+     full_* flags                        → full calendar period, includes future days
+     rolling_12m                         → last 12 full completed months (ref_m anchor)
 
    Usage: copy the full query and delete the flag sections not required.
 */
@@ -69,109 +75,92 @@ dates AS (
     -- Group 01 · Time Offsets
     -- Positive = past, negative = future
     -- ════════════════════════════════════════════════════════════════════════
-    DATEDIFF('day',     date, CURRENT_DATE())           AS day_offset,
-    DATEDIFF('week',    date, CURRENT_DATE())           AS week_offset,
-    DATEDIFF('month',   date, CURRENT_DATE())           AS month_offset,
-    DATEDIFF('quarter', date, CURRENT_DATE())           AS quarter_offset,
-    DATEDIFF('year',    date, CURRENT_DATE())           AS year_offset,
+    DATEDIFF('day',     date, CURRENT_DATE())           AS offset_day,
+    DATEDIFF('week',    date, CURRENT_DATE())           AS offset_week,
+    DATEDIFF('month',   date, CURRENT_DATE())           AS offset_month,
+    DATEDIFF('quarter', date, CURRENT_DATE())           AS offset_quarter,
+    DATEDIFF('year',    date, CURRENT_DATE())           AS offset_year,
 
     -- ════════════════════════════════════════════════════════════════════════
-    -- Group 02 · Current Period Flags
-    -- _D: upper bound = ref_d (yesterday, last closed day)
-    -- _M: upper bound = ref_m (last closed month-end)
-    -- _F: full calendar period including future days within it
+    -- Group 02 · Full Period Flags  (is_full_*)
+    -- Complete calendar periods — includes future days within the period.
     -- ════════════════════════════════════════════════════════════════════════
-    date >= DATE_TRUNC('year',    CURRENT_DATE())
-        AND date <= r.ref_d                             AS is_ytd_d,       -- YTD daily: Jan 1 → ref_d
-    date >= DATE_TRUNC('year',    CURRENT_DATE())
-        AND date <= r.ref_m                             AS is_ytd_m,       -- YTD monthly: Jan 1 → ref_m
-    date >= DATE_TRUNC('quarter', CURRENT_DATE())
-        AND date <= r.ref_d                             AS is_qtd_d,       -- QTD daily: quarter start → ref_d
-    date >= DATE_TRUNC('quarter', CURRENT_DATE())
-        AND date <= r.ref_m                             AS is_qtd_m,       -- QTD monthly: quarter start → ref_m
-    date >= DATE_TRUNC('month',   CURRENT_DATE())
-        AND date <= r.ref_d                             AS is_mtd_d,       -- MTD daily: month start → ref_d
-    date >= DATE_TRUNC('month',   CURRENT_DATE())
-        AND date <= r.ref_d                             AS is_cm_d,        -- Current month, closed days only (= is_mtd_d)
-    date >= DATE_TRUNC('month',   CURRENT_DATE())
-        AND date <= r.ref_m                             AS is_cm_m,        -- Current month, completed-month view (FALSE while month is open)
+    MONTH(date) = MONTH(CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_full_month_ay, -- Full month, any year, daily anchor
     YEAR(date)  = YEAR(CURRENT_DATE())
-        AND MONTH(date) = MONTH(CURRENT_DATE())         AS is_cm_f,        -- Current Month (full calendar month)
+        AND MONTH(date) = MONTH(CURRENT_DATE())         AS is_full_month_cy, -- Full current month
+    date >= DATE_TRUNC('month', r.ref_m)
+        AND date <= r.ref_m                             AS is_full_month_py, -- Full prior month
     YEAR(date)    = YEAR(CURRENT_DATE())
-        AND QUARTER(date) = QUARTER(CURRENT_DATE())     AS is_cq_f,        -- Current Quarter (full)
-    YEAR(date) = YEAR(CURRENT_DATE())                   AS is_cy_f,        -- Current Year (full)
+        AND QUARTER(date) = QUARTER(CURRENT_DATE())     AS is_full_quarter_cy, -- Full current quarter
+    date >= DATE_TRUNC('quarter', r.ref_m)
+        AND date <  DATE_TRUNC('quarter', CURRENT_DATE()) AS is_full_quarter_py, -- Full prior quarter
     date >= DATE_TRUNC('week', CURRENT_DATE())
         AND date <  DATEADD(week, 1,
-            DATE_TRUNC('week', CURRENT_DATE()))         AS is_cw_f,        -- Current Week (full)
-    date = CURRENT_DATE()                               AS is_today,
-
-    -- ════════════════════════════════════════════════════════════════════════
-    -- Group 03 · Prior Period Flags — Like-for-Like
-    -- Mirrors the current period shifted back by one year/quarter/month,
-    -- clipped to the same elapsed days for apples-to-apples comparison.
-    -- ════════════════════════════════════════════════════════════════════════
-    date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
-        AND date <= DATEADD(year, -1, r.ref_d)          AS is_pytd_d,      -- Prior YTD daily: PY Jan 1 → (ref_d − 1 year)
-    date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
-        AND date <= DATEADD(year, -1, r.ref_m)          AS is_pytd_m,      -- Prior YTD monthly: PY Jan 1 → (ref_m − 1 year)
-    date >= DATE_TRUNC('quarter', DATEADD(month, -3, CURRENT_DATE()))
-        AND date <= DATEADD(month, -3, r.ref_d)         AS is_pqtd_d,      -- Prior QTD daily: prior quarter start → (ref_d − 1 quarter)
-    date >= DATE_TRUNC('month', DATEADD(month, -1, CURRENT_DATE()))
-        AND date <= DATEADD(month, -1, r.ref_d)         AS is_pmtd_d,      -- Prior MTD daily: prior month start → (ref_d − 1 month)
-
-    -- ════════════════════════════════════════════════════════════════════════
-    -- Group 04 · Prior Period Flags — Full Reference
-    -- Complete prior calendar periods used for benchmarks and trend lines
-    -- ════════════════════════════════════════════════════════════════════════
-    YEAR(date) = YEAR(CURRENT_DATE()) - 1               AS is_fpy,         -- Full Prior Year
-    date >= DATE_TRUNC('quarter', r.ref_m)
-        AND date <  DATE_TRUNC('quarter', CURRENT_DATE()) AS is_fpq,       -- Full Prior Quarter
-    date >= DATE_TRUNC('month',   r.ref_m)
-        AND date <= r.ref_m                             AS is_fpm,         -- Full Prior Month
+            DATE_TRUNC('week', CURRENT_DATE()))         AS is_full_week_cy,  -- Full current week
     date >= DATE_TRUNC('week', DATEADD(week, -1, CURRENT_DATE()))
-        AND date <  DATE_TRUNC('week', CURRENT_DATE())  AS is_fpw,         -- Full Prior Week
-    date = r.ref_d                                      AS is_yesterday,
+        AND date <  DATE_TRUNC('week', CURRENT_DATE())  AS is_full_week_py,  -- Full prior week
+    YEAR(date) = YEAR(CURRENT_DATE())                   AS is_full_year_cy,  -- Full current year
+    YEAR(date) = YEAR(CURRENT_DATE()) - 1               AS is_full_year_py,  -- Full prior year
 
     -- ════════════════════════════════════════════════════════════════════════
-    -- Group 05 · Trailing Windows
-    -- All windows are inclusive of ref_d as the last completed day.
-    -- Use C_/P_ pairing for period-over-period comparisons.
+    -- Group 03 · Month to Date  (is_mtd_*)
+    -- Month start → ref_d (daily anchor)
     -- ════════════════════════════════════════════════════════════════════════
-    date >= DATEADD(day,   -6, r.ref_d)
-        AND date <= r.ref_d                             AS is_l7d,         -- Last 7 completed days
-    date >= DATEADD(day,  -29, r.ref_d)
-        AND date <= r.ref_d                             AS is_l30d,        -- Last 30 completed days
+    MONTH(date) = MONTH(CURRENT_DATE())
+        AND DAY(date) <= DAY(r.ref_d)                   AS is_mtd_ay,        -- MTD position, any year
+    date >= DATE_TRUNC('month', CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_mtd_cy,        -- MTD current month → ref_d
+
+    -- ════════════════════════════════════════════════════════════════════════
+    -- Group 04 · Quarter to Date / Quarter to Month  (is_qtd_*, is_qtm_*)
+    -- QTD: quarter start → ref_d (daily anchor)
+    -- QTM: quarter start → ref_m (monthly anchor)
+    -- ════════════════════════════════════════════════════════════════════════
+    date >= DATE_TRUNC('quarter', CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_qtd_cy,        -- QTD current quarter → ref_d
+    date >= DATE_TRUNC('quarter', DATEADD(month, -3, CURRENT_DATE()))
+        AND date <= DATEADD(month, -3, r.ref_d)         AS is_qtd_py,        -- QTD prior quarter → (ref_d − 1 quarter)
+    date >= DATE_TRUNC('quarter', CURRENT_DATE())
+        AND date <= r.ref_m                             AS is_qtm_cy,        -- QTM current quarter → ref_m
+
+    -- ════════════════════════════════════════════════════════════════════════
+    -- Group 05 · Rolling 12 Months  (is_rolling_12m_*)
+    -- Full completed months only; never includes the current open month.
+    -- cy: most recent 12 full months; py: the 12 full months before that.
+    -- ════════════════════════════════════════════════════════════════════════
     date >= DATE_TRUNC('month', DATEADD(month, -12, CURRENT_DATE()))
-        AND date <= r.ref_m                             AS is_c_l12m_f,    -- Last 12 full months (pair: IS_P_L12M_F)
-    date >= DATEADD(day, -364, r.ref_d)
-        AND date <= r.ref_d                             AS is_ttm,         -- Trailing 12 months (rolling 365 completed days)
+        AND date <= r.ref_m                             AS is_rolling_12m_cy, -- Rolling 12 months, current window
     date >= DATE_TRUNC('month', DATEADD(month, -24, CURRENT_DATE()))
         AND date <  DATE_TRUNC('month',
-            DATEADD(month, -12, CURRENT_DATE()))        AS is_p_l12m_f,    -- Prior 12 full months (pair: IS_C_L12M_F)
+            DATEADD(month, -12, CURRENT_DATE()))        AS is_rolling_12m_py, -- Rolling 12 months, prior window
 
     -- ════════════════════════════════════════════════════════════════════════
-    -- Group 06 · Attributes & Maturity
+    -- Group 06 · Year to Date / Year to Month  (is_ytd_*, is_ytm_*)
+    -- YTD: Jan 1 → ref_d (daily anchor)
+    -- YTM: Jan 1 → ref_m (monthly anchor)
     -- ════════════════════════════════════════════════════════════════════════
-    date <= r.ref_m                                     AS is_cmpl_m,      -- TRUE if the date falls in a fully elapsed month
-    date <= r.ref_d                                     AS is_past_d,      -- TRUE if date is in the past (daily: on or before ref_d)
-    date <= r.ref_m                                     AS is_past_m,      -- TRUE if date is in the past (monthly: on or before ref_m)
-    DAYOFYEAR(date)                                     AS doy,            -- Day of year (1–366)
-    DAYOFWEEK(date) IN (0, 6)                           AS is_weekend,
-
-    -- ════════════════════════════════════════════════════════════════════════
-    -- Group 07 · Any-Year Comparisons
-    -- Same calendar position as the current period, across all years.
-    -- Useful for same-month trend lines and cross-year overlays.
-    -- ════════════════════════════════════════════════════════════════════════
-    MONTH(date) = MONTH(CURRENT_DATE())
-        AND date <= r.ref_d                             AS is_cm_ay_d,     -- Current calendar month, any year, closed days
-    MONTH(date) = MONTH(CURRENT_DATE())
-        AND date <= r.ref_m                             AS is_cm_ay_m,     -- Current calendar month, any year, completed-month view
-    MONTH(date) = MONTH(CURRENT_DATE())
-        AND DAY(date) <= DAY(r.ref_d)                   AS is_mtd_ay_d,    -- MTD position in current month, any year
     (MONTH(date) < MONTH(r.ref_d))
         OR (MONTH(date) = MONTH(r.ref_d)
-            AND DAY(date) <= DAY(r.ref_d))              AS is_ytd_ay_d     -- YTD position (Jan 1 → ref_d calendar point), any year
+            AND DAY(date) <= DAY(r.ref_d))              AS is_ytd_ay,        -- YTD position, any year
+    date >= DATE_TRUNC('year', CURRENT_DATE())
+        AND date <= r.ref_d                             AS is_ytd_cy,        -- YTD current year → ref_d
+    date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
+        AND date <= DATEADD(year, -1, r.ref_d)          AS is_ytd_py,        -- YTD prior year → (ref_d − 1 year)
+    date >= DATE_TRUNC('year', CURRENT_DATE())
+        AND date <= r.ref_m                             AS is_ytm_cy,        -- YTM current year → ref_m
+    date >= DATE_TRUNC('year', DATEADD(year, -1, CURRENT_DATE()))
+        AND date <= DATEADD(year, -1, r.ref_m)          AS is_ytm_py,        -- YTM prior year → (ref_m − 1 year)
+
+    -- ════════════════════════════════════════════════════════════════════════
+    -- Group 07 · Status & Maturity Flags
+    -- ════════════════════════════════════════════════════════════════════════
+    date <= r.ref_d                                     AS is_past,          -- Date is on or before ref_d
+    date <= r.ref_m                                     AS is_past_full_month, -- Date is on or before ref_m (month fully elapsed)
+    date = CURRENT_DATE()                               AS is_today,
+    DAYOFWEEK(date) IN (0, 6)                           AS is_weekend,
+    date = r.ref_d                                      AS is_yesterday,
+    DAYOFYEAR(date)                                     AS doy               -- Day of year (1–366)
 
     FROM calendar_base
     CROSS JOIN ref r
@@ -234,9 +223,7 @@ bw_holidays AS (
 
 -- ── Final assembly ────────────────────────────────────────────────────────────
 -- Joins date flags with holiday data. is_bday_bw is named here so that
--- bday_bw (integer) can be derived from it in the outer SELECT without
--- repeating the condition. is_bday_bw references is_weekend from dates,
--- so the weekend check is defined in exactly one place.
+-- bday_bw (integer) can be derived from it without repeating the condition.
 combined AS (
     SELECT
         c.*,
@@ -264,4 +251,4 @@ SELECT
     *,
     is_bday_bw::INT AS bday_bw    -- 1 = business day; SUM() to count business days in any period
 FROM combined
-ORDER BY date
+ORDER BY date;
